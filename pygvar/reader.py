@@ -701,7 +701,7 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
 
         bytes_to_read = int((w_count - 2) * (w_size / float(nbits_in_byte)) + 2)
         if len(f) - fmem_offset < bytes_to_read:
-            raise IOError('GVASR %s has a basd size' % gvar_file)
+            raise IOError('GVAR %s has a bad size' % gvar_file)
         block_data = f[fmem_offset:fmem_offset+bytes_to_read]
 
         #logger.debug('bid %d  bcount  %d boffset %d' % (bid, bcount, block_offset))
