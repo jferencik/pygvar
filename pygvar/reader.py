@@ -825,8 +825,6 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
                     #get the infrared line number by dividing the vis using resolution
                     ir_line = vis_line//chn_res
 
-                    if ir_line == 1849:
-                        print('BANG')
 
                     # this is the pythonic alternative to brute force. By keeping the track of current and previous line number
                     #missing lines can be detected and interpolated which greatly improves the quality of images

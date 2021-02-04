@@ -7,7 +7,6 @@ RAD = PI / 180.  # degrees to radians conversion pi/180
 
 def view_gvar(gvar_file, channel_to_extract=None):
     b0, data = parse_gvar(gvar_file, channels_to_extract=[channel_to_extract])
-    print(data.keys())
     nl, nc, linres, eleres = b0.channels_shape[channel_to_extract]
     # print (nl, nc, linres, eleres)
     # print (b0.vis_bbox)
