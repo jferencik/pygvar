@@ -107,7 +107,8 @@ def b0_parity_check(b0data):
     b =   277, 1625, 2305, 5385, 6303, 8039
     return parity(b0data[a[0]:b[0]]) == b0data[b[0]]
 
-
+def header2dict(h):
+    return dict(zip(h.dtype.names, *h))
 
 def find_header(fmem=None, fmem_offset=0, nhdrs=5):
     """
@@ -303,7 +304,6 @@ def find_header(fmem=None, fmem_offset=0, nhdrs=5):
             if block_offset == -1:
                 logger.debug('*'*100)
                 logger.debug(150-(2-block_offset)*N_HEADER_BYTES + tracker)
-
             return headers[hcrc], good_headers[hindex], 150-(2-block_offset)*N_HEADER_BYTES + tracker
 
 
@@ -584,7 +584,7 @@ def inspect_gvar(fmem=None):
 
 
 #@timeit()
-def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True):
+def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True, create_own_index=False):
     """
     A functional interface to a GOES GVAR imager file. Pure python (numpy) and decently fast
 
@@ -627,14 +627,19 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
     :param gvar_file: str,
     :param channels_to_extract:
     :param fill_missing_lines: bool
+    :param create_own_index: bool, False
     :return:
     """
+    if create_own_index:
+        index_file = f'{gvar_file}.mindx'
     assert os.path.abspath(gvar_file), 'The "gvar_file"  %s  must be an absolute path' % gvar_file
     assert os.path.exists(gvar_file), 'The "gvar_file" %s a does not exist' % gvar_file
     nbits_in_byte = 8
     logger.debug('Parsing %s' % gvar_file)
     try:
         f = np.memmap(gvar_file,mode='r')
+        if create_own_index:
+            mif = open(index_file, 'w')
     except Exception as e:
         fsize  = os.path.getsize(gvar_file)
         raise Exception('Looks like something went wrong while mapping %s to memory %s. The size of the GVAR is %d' % (gvar_file, e, fsize))
@@ -664,6 +669,7 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
         missing_lines[channel_to_extract] = list()
 
     #main loop
+    nb = 0
     while True:
 
         perc = 100. * fmem_offset / f.size
@@ -679,27 +685,33 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
             logger.error('Failed to find a valid header at %.2f %% in %s' % (perc, gvar_file))
             raise(Exception('Failed to find a valid header at %.2f %% in %s' % (perc, gvar_file)))
             break
-
+        #print(header2dict(header))
         #logger.debug(headers)
         if header is None:
             # one can assume in case a header was not found the end of file was reached
             logger.debug('Finished scanning')
             break
 
-        #u[date fmemoffset
-        fmem_offset+=block_offset
-
         data_valid = header['DataValid'].item()
         bid = 0 if header['BlockID'] == 240 else header['BlockID'].item()
         bcount = header['BlockCount'].item()
         w_size = header['WordSize'].item()
         w_count = header['WordCount'].item()
-        #logger.debug('%s %s  at %s nheaders %s'% (bcount, bid,block_offset, headers.size))
+
+
+        nb+=1
 
         if not bcount%1000:
             logger.debug('read %.2f %%' % perc)
 
+
+        # u[date fmemoffset
+        fmem_offset += block_offset
+
         bytes_to_read = int((w_count - 2) * (w_size / float(nbits_in_byte)) + 2)
+
+
+
         if len(f) - fmem_offset < bytes_to_read:
             raise IOError('GVAR %s has a bad size' % gvar_file)
         block_data = f[fmem_offset:fmem_offset+bytes_to_read]
@@ -722,6 +734,8 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
 
             pb0 = b0
             b0 = block0.from_buffer_copy(block_data.data)
+            if create_own_index:
+                mif.write(f'{os.path.split(gvar_file)[1]}  {(bytes_to_read + block_offset) * nbits_in_byte} {bid} {b0.insln} \n')
 
             '''
             KISS. As long as the code is simple things ought to work
@@ -784,6 +798,9 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
             if not data_valid:
                 logger.debug('block %d count %d has invalid data' % (bid, bcount))
                 continue
+            if create_own_index:
+                mif.write(
+                    f'{os.path.split(gvar_file)[1]}  {(bytes_to_read + block_offset) * nbits_in_byte} {bid}  \n')
             #IR channels clocks contains data from mutiple channels
             line_in_block = 0
             words_to_go = block_words.size
@@ -869,6 +886,9 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
             if not data_valid:
                 logger.debug('block %d count %d has invalid data' % (bid, bcount))
                 continue
+            if create_own_index:
+                mif.write(
+                    f'{os.path.split(gvar_file)[1]}  {(bytes_to_read + block_offset) * nbits_in_byte} {bid}  \n')
             #make sure we have a valid line doc structure
             ldoc = wrap_ldoc(block_words[:N_LDOC_BYTES])
             if ldoc_16.size != N_LDOC_BYTES:  # perhaps some extra bytes
@@ -957,6 +977,8 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
                     for mml in range(min_ml, max_ml+1):
                         channels_data[ccc][mml,:] = start_l_data+ np.round((end_l_data-start_l_data)/(float(end_l)-mml)).astype(np.int32)
     del perc, fmem_offset, b0, headers, header, missing_lines # leaks because python 2 leaves the vars in the namespoace after any loop has finished
+    if create_own_index:
+        mif.close()
     return fb0, channels_data
 
 
