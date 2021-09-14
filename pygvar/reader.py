@@ -308,8 +308,6 @@ def find_header(fmem=None, fmem_offset=0, nhdrs=5):
 
 
 
-
-
 def inspect_gvar(fmem=None):
     """
     Inspects a 1D u1 (byte) array representing an in memory GOES GVAR file
@@ -324,6 +322,8 @@ def inspect_gvar(fmem=None):
     nbits_in_byte = 8
     fmem_offset = 0
     ir_channels_det = dict()
+    detectors = dict()
+    chn_dims = dict()
     ir_channels_npix = []
     logger.debug('Inspecting...')
     break_bcount = 0
@@ -427,7 +427,11 @@ def inspect_gvar(fmem=None):
                 if n_words == 0 or npix == 0  or lidet not in range(1, 9):
                     logger.debug('Invalid line documentation encountered at block number %s of type %s' % (bcount, bid))
                     break
-
+                if not chn in detectors:
+                    detectors[chn] = [lidet]
+                else:
+                    if not lidet in detectors[chn]:
+                        detectors[chn].append(lidet)
                 if not chn in ir_channels_det:
                     ir_channels_det[chn] = [lidet]
                 else:
@@ -450,7 +454,7 @@ def inspect_gvar(fmem=None):
                 continue
 
             vis_ldoc = wrap_ldoc(block_words[:N_LDOC_BYTES])
-
+            chn = vis_ldoc['LICHAA']
             vis_npix = vis_ldoc['LPIXLS']
             lidet = int(vis_ldoc['LIDET'])
 
@@ -458,10 +462,19 @@ def inspect_gvar(fmem=None):
                 logger.debug('Invalid line documentation encountered at block number %s of type %s' % (bcount, bid))
                 break_bcount+=1
                 continue
+
+            if not chn in detectors:
+                detectors[chn] = [lidet]
+            else:
+                if not lidet in detectors[chn]:
+                    detectors[chn].append(lidet)
+
             logger.debug('vis npix %d' % vis_npix)
         logger.debug('bid, %d bcount %d, good_data %s, break at %d' % (bid, bcount, good_block_data, break_bcount))
         #print 'inspect', len(ir_channels_npix)
-        if bcount == break_bcount and len(ir_channels_det) == 4:
+        #if bcount == break_bcount and len(ir_channels_det) == 4:
+
+        if bcount == break_bcount and len(detectors[chn]) >= 8:
             logger.debug('Finished inspecting at %d %d ' % (bid, bcount))
             break
 
@@ -480,19 +493,45 @@ def inspect_gvar(fmem=None):
     #vislines = vis_nlines
     viscols = w if w == vis_npix else vis_npix
     #viscols =vis_ncols
+    #
+    # n_ir_detectors = [len(e) for e in ir_channels_det.values()]
+    # max_ndet = max(n_ir_detectors)
+    # line_ir_ratios = [e / float(max_ndet) / 4 for e in n_ir_detectors]
+    # chn_dims[1] = vislines, viscols, 1,1
+    # for i, chn in enumerate(ir_channels_det):
+    #     chn_dims[chn] = int(vislines * line_ir_ratios[i]), ir_channels_npix[i], int(round(vis_nlines/(vislines * line_ir_ratios[i]))), 4
+    #
+    # b0.channels_shape = chn_dims
 
 
-    n_ir_detectors = [len(e) for e in ir_channels_det.values()]
 
-    max_ndet = max(n_ir_detectors)
-    line_ir_ratios = [e / float(max_ndet) / 4 for e in n_ir_detectors]
+    no_detectors = [len(e) for e in detectors.values()]
+
+    ir_npix = list(set(ir_channels_npix))
+    if len(ir_npix) == 1:
+        ir_npix = ir_npix[0]
+    else:
+        npd = dict()
+        for e in ir_npix:
+            npd[e] = ir_npix.count(e)
+        max_v = max(npd.keys())
+        ir_npix = npd[max_v]
 
 
-    chn_dims = {}
-    chn_dims[1] = vislines, viscols, 1,1
-    for i, chn in enumerate(ir_channels_det):
-        chn_dims[chn] = int(vislines * line_ir_ratios[i]), ir_channels_npix[i], int(round(vis_nlines/(vislines * line_ir_ratios[i]))), 4
+    ratios = [ e/8 for e in no_detectors]
+    yres = [ 8/e for e in no_detectors]
+    for i, chn in enumerate(detectors):
+        chn_nlines = int(vislines * ratios[i])
+        chn_yreskm = int(yres[i])
+        chn_xreskm = 1 if chn == 1 else int(round(viscols / ir_npix))
+        chn_ncols = int(round(viscols/chn_xreskm))
+
+        chn_dims[chn] = chn_nlines,chn_ncols, chn_yreskm, chn_xreskm
+
     b0.channels_shape = chn_dims
+    b0.detectors = detectors
+
+
 
     #compute theoretical scan duration
     #it looks like the ISTIM can  be used to compute the scan duration in seconds
@@ -581,10 +620,8 @@ def inspect_gvar(fmem=None):
 
     return b0
 
-
-
 #@timeit()
-def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True, create_own_index=False):
+def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True, create_own_index=False,read_all=False):
     """
     A functional interface to a GOES GVAR imager file. Pure python (numpy) and decently fast
 
@@ -654,19 +691,25 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
     #return b0 of user did not ask for data
     channels_dims = fb0.channels_shape
     channels_data = {}
+    detector_lines = {}
     missing_lines = {}
     prev_lines = {}
     for chn_n, dims in channels_dims.items():
         logger.debug(' channel %s dimensions %s ' % (chn_n, str(dims)))
 
     if not channels_to_extract:
-        fb0.scan_duration = fb0.theoretical_scan_duration
-        return fb0
+        if not read_all:
+            fb0.scan_duration = fb0.theoretical_scan_duration
+            return fb0
+        else:
+            channels_to_extract = list(channels_dims.keys())
     for channel_to_extract in channels_to_extract:
         assert channel_to_extract in channels_dims, 'Invalid channel %s. Valid channels are %s' % (channel_to_extract, channels_dims.keys())
         channel_lines, channel_cols, chn_lineres, chn_colres = channels_dims[channel_to_extract]
         channels_data[channel_to_extract] = np.zeros((channel_lines, channel_cols), dtype='int16')
         missing_lines[channel_to_extract] = list()
+        detector_lines[channel_to_extract] = np.empty((channel_lines,), dtype='u1')
+
 
     #main loop
     nb = 0
@@ -870,13 +913,19 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
                     start = chn_offset + N_LDOC_BYTES
                     end = start + npix
                     ir_line_data = block_words[start:end]
+                    #if ir_line >= 20 and ir_line <= 29:
+                    #print({'channel':chn, 'line_no':ir_line, 'detector':lidet, 'det_no':det}, b0.iscan.side2)
+
+
                     #make sure again things are under control
                     if npix >= chn_nc: #there are more columsn than header says so we subset the pixels with difference
                         npix +=chn_nc-npix
                     if ir_line_data.size != npix:
                         pass
+
                     #finally read the data
                     channels_data[chn][ir_line, :npix] = ir_line_data[:npix]
+                    detector_lines[chn][ir_line] = det
                     #logger.debug('ir_line %s chn_nl %s, vis_line %s ' % (ir_line, chn_nl, vis_line))
                 line_in_block += 1
                 words_to_go -= n_words
@@ -914,6 +963,7 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
                 #get the visible line number
                 rel_vis_line = chn_res * det + chn_res/2.-.5
                 vis_line = (int(b0.insln + rel_vis_line)) - b0.infln
+
                 # this is the pythonic alternative to brute force. By keeping the track of current and previous line number
                 # missing lines can be detected and interpolated which greatly improves the quality of images
                 try:
@@ -944,8 +994,11 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
                 if line_data.size != npix:# skip thi line, something went bad
                     pass # just do nothing
 
+                #print({'channel':chn, 'line_no':vis_line, 'detector':lidet, 'det_no':det}, b0.iscan.side2)
+
                 #finally read data
                 channels_data[chn][vis_line, :npix] = line_data[:npix]
+                detector_lines[chn][vis_line] = det
 
 
 
@@ -979,8 +1032,8 @@ def parse_gvar(gvar_file=None, channels_to_extract=None, fill_missing_lines=True
     del perc, fmem_offset, b0, headers, header, missing_lines # leaks because python 2 leaves the vars in the namespoace after any loop has finished
     if create_own_index:
         mif.close()
+    fb0.detector_lines = detector_lines
     return fb0, channels_data
-
 
 def parse_gvars_multichannel(folder=None, channels_to_extract=[], view=False, save_to_tiff_folder=None):
     """
