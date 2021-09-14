@@ -338,7 +338,7 @@ class block0(GvarStruct):
     nbytes = 8040
 
     _fields_ = (
-        #('headers', bheader*3),
+        #('headers', block_header*3),
         ('spcid', C.c_uint8),
         ('spsid', C.c_uint8),
         ('iscan', ISCAN),
