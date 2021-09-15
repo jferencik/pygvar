@@ -3,7 +3,8 @@ import datetime
 import math
 from pygvar.utils import f2int
 import numpy as np
-
+from pygvar.geos_nav import lc2ll
+import multiprocessing as mp
 
 """
 This module is an updated mixed optimised port of ancillary ELUG Fortran code that performs GOES GVAR navigation.
@@ -1123,4 +1124,124 @@ def le2ll(lines=None, cols=None, b0=None, lineres=1., colres=1.):
     return rlat.squeeze(), rlon.squeeze()
 
 
+def test_chunk_intersection(points=None, navigator=None, block0=None, channel=None):
+    """
+    test if a chunk of image represented by four corners intersects an AreaFile
+    :param b0: block0 object from pygvar
+    :param points: iter of 4 points (line, column) in range 0-number of lines in the image, 0-number of columns in the image
+
+    :return:
+    """
+    orig_nl, orig_nc, yres_km, xres_km = block0.channels_shape[channel]
+
+    top, bottom, left, right = 0, orig_nl, 0, orig_nc
+    for e in points:
+        l, c = e
+        lat, lon = lc2ll(l=l, c=c, geos_obj=navigator)
+        if np.isnan(lat) or np.isnan(lon):
+            continue
+        else:
+            area_l, area_c, = ll2le(lats=lat, lons=lon, b0=block0, lineres=yres_km, colres=xres_km)
+            # print area_l, top, bottom
+            # print area_c, left, right
+            if (top <= area_l < bottom) and (left <= area_c < right):
+
+                return True
+    return False
+
+def reproject_segment(sl=None, el=None, sc=None, ec=None, navigator=None, block0=None, channel=None):
+    """
+    Reproject a chunk of original data corresponding to a target geostationary space
+    defined by indices
+    """
+    orig_nl, orig_nc, yres_km, xres_km = block0.channels_shape[channel]
+    # create a grid in index space
+    l, c = np.mgrid[sl:el, sc:ec]
+    #reproject the indices into lat lon using geostationary navigation
+    lats, lons = lc2ll(l=l, c=c,geos_obj=navigator)
+    #reproject the lat lons into area coordinates
+    area_l, area_c = ll2le(lats=lats, lons=lons, b0=block0, lineres=yres_km, colres=xres_km)
+    #convert to int indices from float
+    area_l = np.round(area_l).astype(np.int32)
+    area_c = np.round(area_c).astype(np.int32)
+
+    # mask the area coordinates that fall outside the earth disk
+    lmask = (area_l >= 0) & (area_l < orig_nl)
+    cmask = (area_c >= 0) & (area_c < orig_nc)
+    m = lmask & cmask
+    marea_l = area_l[m]
+    marea_c = area_c[m]
+    # return the mask, and masked indices(1D)
+    return m, marea_l, marea_c
+
+
+def gvarchannels2geos(raw_channel_data=None, channel=None,  block0=None, navigator=None, nchunks_per_dim=None):
+    shape = navigator.fd_lines, navigator.fd_cols
+    _, __, yres_km, xres_km = block0.channels_shape[channel]
+    orig_nl, orig_nc = raw_channel_data.shape
+    geos_data = np.zeros(shape, dtype=raw_channel_data.dtype)  # print channel_no, raw_data.shape, seg_len
+
+    if nchunks_per_dim is None:
+
+
+        l, c = np.mgrid[0:shape[0], 0:shape[1]]
+        lats, lons = lc2ll(l=l, c=c, geos_obj=navigator)
+        area_l, area_c = ll2le(lats=lats, lons=lons, b0=block0, lineres=yres_km, colres=xres_km)
+        # reproject
+        area_l = np.round(area_l).astype(np.int32)
+        # marea_l = np.round(area_l[m]).astype(np.int32)
+        area_c = np.round(area_c).astype(np.int32)
+        # mask the invalid indices
+        lmask = (area_l >= 0) & (area_l < orig_nl)
+        cmask = (area_c >= 0) & (area_c < orig_nc)
+        m = lmask & cmask
+        marea_l = area_l[m]
+        marea_c = area_c[m]
+        geos_data[m] = raw_channel_data[marea_l, marea_c]
+        return geos_data
+    else:
+        pool = mp.Pool(processes=mp.cpu_count())
+        try:
+            chunk_len = navigator.fd_lines / nchunks_per_dim
+            out_geos_segs_data = {}
+            for i in range(nchunks_per_dim):
+                sl = int(i * chunk_len)
+                el = int(sl + chunk_len)
+                for j in range(nchunks_per_dim):
+                    sc = int(j * chunk_len)
+                    ec = int(sc + chunk_len)
+                    corners = ((sl, sc), (sl, ec), (el, sc), (el, ec))
+                    # chek if the chunk needs to be really reprojected.
+                    # This makes sense for smaller coverages because it speeds the things up
+                    should_continue = test_chunk_intersection(points=corners, navigator=navigator, block0=block0, channel=channel)
+                    if should_continue:
+                        n = '%s_%s' % (i, j)
+                        kwargs = dict(sl=sl, el=el, sc=sc, ec=ec, navigator=navigator, block0=block0, channel=channel)
+                        r = pool.apply_async(reproject_segment, kwds=kwargs)
+                        out_geos_segs_data[n] = r
+
+            pool.close()
+            pool.join()
+            # collect the results
+            for n, ds in out_geos_segs_data.items():
+                istr, jstr = n.split('_')
+                i = int(istr)
+                j = int(jstr)
+                sl = int(i * chunk_len)
+                el = int(sl + chunk_len)
+                sc = int(j * chunk_len)
+                ec = int(sc + chunk_len)
+                m, marea_l, marea_c = ds.get()
+                # reproject, use the mask to avoid any issues
+                geos_data[sl:el, sc:ec][m] = raw_channel_data[marea_l, marea_c]
+            return geos_data
+
+        except Exception as e:
+            pool.close()
+            pool.terminate()
+            raise e
+        except KeyboardInterrupt as ke:
+            pool.close()
+            pool.terminate()
+            raise ke
 

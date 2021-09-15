@@ -478,11 +478,6 @@ def yx2ll(y=None, x=None, lon_0=None, sweep=None, r_eq=None, r_pol=None, sat_hei
     return pj4_yx2ll(y=y, x=x, lon_0=lon_0, sweep=sweep, r_eq=r_eq, r_pol=r_pol, sat_height=sat_height)
 
 
-    # if sweep == 'x':
-    #     return yx2ll_sweepx(y=y,x=x,lon_0=lon_0,r_eq=r_eq,r_pol=r_pol, sat_height=sat_height )
-    # else:
-    #     return yx2ll_sweepy(y=y,x=x,lon_0=lon_0,r_eq=r_eq,r_pol=r_pol, sat_height=sat_height )
-
 
 def yx2lc(y=None, x=None, res_mrad=None, fd_lines=None, fd_fov=None, line_adj=0, col_adj=0):
     """

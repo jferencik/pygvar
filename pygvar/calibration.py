@@ -514,12 +514,15 @@ def ir_calibrate(counts=None,  satellite=None,
     channel_coeffs = get_ir_teff2tem_coeffs(satellite=satellite, channel=channel,
                                        detector_side=side)
 
+
+
     out_data = np.full_like(counts, dtype='f4', fill_value=np.nan)
     m = IR_SLOPEOFFS_COEFFS[channel]['m']
     b = IR_SLOPEOFFS_COEFFS[channel]['b']
 
 
     detectors = list(set(detector_lines))
+
 
     for detector_no in detectors:
         det_name = f'detector_{detector_no}'
@@ -535,7 +538,7 @@ def ir_calibrate(counts=None,  satellite=None,
             out_data[det_lines, :] = radiance
         else:
             t_eff = (c2 * detector_coeffs['wavenumber']) / np.log(((c1 * (detector_coeffs['wavenumber'] ** 3)) / radiance) + 1)
-            return detector_coeffs['b0'] + (detector_coeffs['b1'] * t_eff) + (detector_coeffs['b2'] * (t_eff ** 2))
+            out_data[det_lines, :] = detector_coeffs['b0'] + (detector_coeffs['b1'] * t_eff) + (detector_coeffs['b2'] * (t_eff ** 2))
 
     return  out_data
 
